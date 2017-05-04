@@ -1,0 +1,169 @@
+package sri.tools.graphqlmodels
+
+import io.scalajs.JSON
+import io.scalajs.nodejs.fs
+import io.scalajs.nodejs.fs.Fs
+import org.scalajs.dom
+
+import scala.scalajs.js
+import scala.scalajs.js.{undefined, UndefOr => U}
+import scala.scalajs.js.JSApp
+import scala.scalajs.js.annotation.{JSImport, ScalaJSDefined}
+
+object Generator extends JSApp {
+
+  val gqlTypes = Map("String" -> "String",
+                     "Float" -> "Double",
+                     "Int" -> "Int",
+                     "Boolean" -> "Boolean",
+                     "DateTime" -> "String",
+                     "ID" -> "String")
+
+  def getScalaType(in: GraphQLDefinitionFieldType,
+                   isRequired: Boolean = false): String = {
+
+    if (in.kind == GraphQLDefinitionFieldTypeKind.LIST_TYPE) {
+      if (isRequired) s"js.Array[${getScalaType(in.`type`, false)}]"
+      else s"js.UndefOr[js.Array[${getScalaType(in.`type`, false)}]]"
+    } else if (in.kind == GraphQLDefinitionFieldTypeKind.NON_NULL_TYPE) {
+      getScalaType(in.`type`, true)
+    } else if (in.kind == GraphQLDefinitionFieldTypeKind.NAMED_TYPE) {
+      val t = in.name.value
+      if (isRequired) gqlTypes.getOrElse(t, t)
+      else s"js.UndefOr[${gqlTypes.getOrElse(t, t)}]"
+    } else getScalaType(in.`type`, false)
+  }
+
+  def getScalaName(in: String): String = in match {
+    case "type" => "`type`"
+    case "var" => "`var`"
+    case "object" => "`object`"
+    case "then" => "`then`"
+    case _ => in
+  }
+
+  case class ScalaField(name: String, tpe: String)
+
+  def convertGraphFieldToScalaField(in: GraphQLDefinitionField) = {
+    val name = getScalaName(in.name.value)
+//    println(s"type dude : ${JSON.stringify(in.`type`)}")
+    val tpe = getScalaType(in.`type`)
+    ScalaField(name, tpe)
+  }
+
+  def convertObjectDefinitionToScala(in: GraphQLDefinition) = {
+//    dom.window.console.log("converting type", in.name.value)
+    val traitName = in.name.value
+    val interfaces = in.interfaces.map(gi => gi.name.value).toList
+    val ext =
+      if (interfaces.length == 0) "js.Object"
+      else if (interfaces.length == 1) interfaces.head
+      else s"${interfaces.head} with ${interfaces.tail.mkString("with")}"
+    val fields = in.fields.map(convertGraphFieldToScalaField)
+    s"""
+       |
+       |@js.native
+       |trait $traitName extends $ext  {
+       |  ${fields
+         .map(sf =>
+           if (sf.name == "id") ""
+           else s"val ${sf.name} :${sf.tpe} = js.native") //Bloody hack hack to get rid of id
+         .mkString("\n")}
+       |}
+     """.stripMargin
+  }
+
+  def convertInterfaceDefinitionToScala(in: GraphQLDefinition) = {
+//    dom.window.console.log("converting type", in.name.value)
+    val traitName = in.name.value
+    val fields = in.fields.map(convertGraphFieldToScalaField)
+    s"""
+       |
+       |@js.native
+       |trait $traitName extends js.Object  {
+       |  ${fields
+         .map(sf => s"val ${sf.name} :${sf.tpe} = js.native")
+         .mkString("\n")}
+       |}
+     """.stripMargin
+  }
+
+  def convertInputObjectTypeDefinitionToScala(in: GraphQLDefinition) = {
+//    dom.window.console.log("converting type", in.name.value)
+    val traitName = in.name.value
+    val fields = in.fields.map(convertGraphFieldToScalaField)
+    s"""
+       |
+       |@ScalaJSDefined
+       |trait $traitName extends js.Object  {
+       |  ${fields
+         .map(sf =>
+           s"val ${sf.name} :${sf.tpe} ${if (sf.tpe.contains("UndefOr[")) s" = js.undefined"
+           else ""}")
+         .mkString("\n")}
+       |}
+     """.stripMargin
+  }
+
+  def convertEnumTypeDefinitionToScala(in: GraphQLDefinition) = {
+//    dom.window.console.log("converting type", in.name.value)
+    val traitName = in.name.value
+    val values = in.values.map(_.name.value)
+    s"""
+       |
+       |@js.native
+       |trait $traitName extends js.Object
+       |
+       |object $traitName {
+       |  ${values
+         .map(v => s"""@inline def $v = "$v".asInstanceOf[$traitName] """)
+         .mkString("\n")}
+       |}
+       |
+     """.stripMargin
+  }
+
+  override def main(): Unit = {
+
+    val in = Fs.readFileSync("schema.graphql", "utf8").toString()
+    val ast = GraphQL.parse(in)
+    val tpes = ast.definitions
+      .map(d => {
+        d.kind match {
+          case GraphQLDefinitionKind.ObjectTypeDefinition =>
+            convertObjectDefinitionToScala(d)
+          case GraphQLDefinitionKind.EnumTypeDefinition =>
+            convertEnumTypeDefinitionToScala(d)
+          case GraphQLDefinitionKind.InputObjectTypeDefinition =>
+            convertInputObjectTypeDefinitionToScala(d)
+          case GraphQLDefinitionKind.InterfaceTypeDefinition =>
+            convertInterfaceDefinitionToScala(d)
+          case _ => ""
+        }
+      })
+      .mkString("\n")
+
+    val out =
+      s"""
+         |package models
+         |
+         |import scala.scalajs.js
+         |import scala.scalajs.js.annotation.{JSImport, ScalaJSDefined}
+         |
+         |
+         | /** this file is automatically generated on ${new js.Date()
+           .toISOString()}
+         |
+         |  don't modify this file directly */
+         |
+         |
+         | $tpes
+         |
+       """.stripMargin
+
+    Fs.writeFileSync("GraphQlModels.scala", out)
+
+    dom.window.console.log(s"Successfully generated models!.")
+
+  }
+}

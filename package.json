@@ -1,0 +1,11 @@
+{
+  "name": "Tools",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+  },
+  "dependencies": {
+    "graphql": "^0.9.5"
+  },
+  "devDependencies": {}
+}
